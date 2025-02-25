@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # preserved here for legacy reasons
 __model_version__ = "latest"

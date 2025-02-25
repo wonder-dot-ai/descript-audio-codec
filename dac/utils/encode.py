@@ -23,36 +23,37 @@ def encode(
     weights_path: str = "",
     model_tag: str = "latest",
     model_bitrate: str = "8kbps",
-    n_quantizers: int = None,
     device: str = "cuda",
     model_type: str = "44khz",
-    win_duration: float = 5.0,
-    verbose: bool = False,
-    force_mono: bool = True,
-    batch_size: int = 1,
-    bin_output: bool = True,
+    win_duration: float = 30.0,
 ):
-    """Encode audio files in input path to .dac format.
+    """
+    Encode audio files in input path to raw binary (.bin) of codebook indices.
 
     Parameters
     ----------
     input : str
         Path to input audio file or directory
     output : str, optional
-        Path to output directory, by default "". If `input` is a directory, the directory sub-tree relative to `input` is re-created in `output`.
+        Path to output directory. If input is a directory, the folder structure
+        is replicated under output. Defaults to "".
     weights_path : str, optional
-        Path to weights file, by default "". If not specified, the weights file will be downloaded from the internet using the
-        model_tag and model_type.
+        If provided, load model weights from here. Otherwise, downloads by tag.
     model_tag : str, optional
-        Tag of the model to use, by default "latest". Ignored if `weights_path` is specified.
+        Tag of the model to use, by default "latest". Ignored if weights_path is set.
     model_bitrate: str
-        Bitrate of the model. Must be one of "8kbps", or "16kbps". Defaults to "8kbps".
+        "8kbps" or "16kbps". Defaults to "8kbps".
     n_quantizers : int, optional
-        Number of quantizers to use, by default None. If not specified, all the quantizers will be used and the model will compress at maximum bitrate.
+        Number of quantizers to use, by default None (use all).
     device : str, optional
-        Device to use, by default "cuda"
+        'cuda' or 'cpu'. Defaults to 'cuda'.
     model_type : str, optional
-        The type of model to use. Must be one of "44khz", "24khz", or "16khz". Defaults to "44khz". Ignored if `weights_path` is specified.
+        '44khz', '24khz', or '16khz'. Defaults to '44khz'.
+    win_duration : float, optional
+        We pass this to the codec to pad up to `win_duration` seconds for single-pass
+        encoding. Defaults to 30.0.
+    verbose : bool, optional
+        If True, enable verbose logging in the codec. Defaults to False.
     """
     generator = load_model(
         model_type=model_type,
@@ -62,9 +63,8 @@ def encode(
     )
     generator.to(device)
     generator.eval()
-    kwargs = {"n_quantizers": n_quantizers}
 
-    # Find all audio files in input path
+    # Gather audio files
     input = Path(input)
     audio_files = util.find_audio(input)
 
@@ -72,35 +72,23 @@ def encode(
     output.mkdir(parents=True, exist_ok=True)
 
     for i in tqdm(range(len(audio_files)), desc="Encoding files"):
-        # Load file
-        signal = AudioSignal(audio_files[i])
+        audio_path = audio_files[i]
+        signal = AudioSignal(audio_path)
 
-        # Encode audio to .dac format
-        artifact = generator.compress(
-            signal,
-            win_duration,
-            verbose=verbose,
-            **kwargs,
-            force_mono=force_mono,
-            chunk_batch_size=batch_size,
+        # Encode audio -> raw code indices (np.int16 array)
+        codes = generator.compress(
+            audio_path_or_signal=signal,
+            max_duration_s=win_duration,
         )
 
-        # Compute output path
-        relative_path = audio_files[i].relative_to(input)
-        output_dir = output / relative_path.parent
-        if not relative_path.name:
-            output_dir = output
-            relative_path = audio_files[i]
-        output_name = relative_path.with_suffix(".dac").name
-        output_path = output_dir / output_name
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Build output path, replicate folder structure if needed
+        relative_path = audio_path.relative_to(input)
+        out_path = (output / relative_path).with_suffix(".bin")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if bin_output:
-            bin_name = relative_path.with_suffix(".bin").name
-            bin_path = output_dir / bin_name
-            artifact.save_bin(bin_path)
-        else:
-            artifact.save(output_path)
+        # Write raw binary data
+        with open(out_path, "wb") as f:
+            f.write(codes.tobytes())
 
 
 if __name__ == "__main__":
