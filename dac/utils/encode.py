@@ -28,6 +28,9 @@ def encode(
     model_type: str = "44khz",
     win_duration: float = 5.0,
     verbose: bool = False,
+    force_mono: bool = True,
+    batch_size: int = 1,
+    bin_output: bool = True,
 ):
     """Encode audio files in input path to .dac format.
 
@@ -73,7 +76,14 @@ def encode(
         signal = AudioSignal(audio_files[i])
 
         # Encode audio to .dac format
-        artifact = generator.compress(signal, win_duration, verbose=verbose, **kwargs)
+        artifact = generator.compress(
+            signal,
+            win_duration,
+            verbose=verbose,
+            **kwargs,
+            force_mono=force_mono,
+            chunk_batch_size=batch_size,
+        )
 
         # Compute output path
         relative_path = audio_files[i].relative_to(input)
@@ -85,7 +95,12 @@ def encode(
         output_path = output_dir / output_name
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        artifact.save(output_path)
+        if bin_output:
+            bin_name = relative_path.with_suffix(".bin").name
+            bin_path = output_dir / bin_name
+            artifact.save_bin(bin_path)
+        else:
+            artifact.save(output_path)
 
 
 if __name__ == "__main__":
