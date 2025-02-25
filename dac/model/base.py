@@ -185,14 +185,22 @@ class CodecMixin:
         _, codes, _, _, _ = self.encode(audio_data, n_quantizers=None)
 
         # 8. Only keep code frames for the original unpadded portion
-        needed_frames = self.get_output_length(original_length)
+        # Calculate the ratio between encoded frames and input samples
+        input_length = audio_data.shape[-1]
+        encoded_length = codes.shape[-1]
+        codes_ratio = encoded_length / input_length
+        needed_frames = math.ceil(original_length * codes_ratio)
+
+        # Ensure we don't exceed the actual number of frames
+        needed_frames = min(needed_frames, encoded_length)
         codes = codes[..., :needed_frames]  # shape => [1, n_codebooks, needed_frames]
 
         # 9. Remove batch dimension => [n_codebooks, needed_frames]
         codes = codes.squeeze(0)
 
         # 10. Convert to CPU np.int16 array
-        return codes.cpu().numpy().astype(np.int16)
+        result = codes.cpu().numpy().astype(np.int16)
+        return result
 
     @torch.no_grad()
     def decompress(
