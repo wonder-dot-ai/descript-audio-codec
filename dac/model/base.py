@@ -1,13 +1,13 @@
 import math
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Union
-
-import numpy as np
 import torch
 import tqdm
-from audiotools import AudioSignal
+import numpy as np
+
 from torch import nn
+from pathlib import Path
+from typing import Union, List
+from dataclasses import dataclass
+from audiotools import AudioSignal
 
 SUPPORTED_VERSIONS = ["1.0.1"]
 
@@ -201,6 +201,95 @@ class CodecMixin:
         # 10. Convert to CPU np.int16 array
         result = codes.cpu().numpy().astype(np.int16)
         return result
+
+    @torch.no_grad()
+    def compress_batch(
+        self,
+        audio_signals: List[AudioSignal],
+        max_duration_s: float = 30.0,
+        normalize_db: float = -16,
+    ) -> List[np.ndarray]:
+        """
+        Batch version of compress that processes multiple audio files at once.
+
+        Parameters
+        ----------
+        audio_signals : List[AudioSignal]
+            List of AudioSignal objects (mono)
+        max_duration_s : float, optional
+            Maximum duration in seconds for encoding, by default 30.0
+        normalize_db : float, optional
+            Target loudness normalization in dB, by default -16
+
+        Returns
+        -------
+        List[np.ndarray]
+            List of compressed audio as codebook indices, each as np.int16 array [n_codebooks, T_codes]
+        """
+        self.eval()
+
+        batch_size = len(audio_signals)
+        if batch_size == 0:
+            return []
+
+        # 1. Load all signals and prepare them
+        batch_audio_data = []
+        original_lengths = []
+
+        audio_signals = [signal.clone().to(self.device) for signal in audio_signals]
+        max_samples = int(self.sample_rate * max_duration_s)
+
+        # Resample and pad all signals at once (GPU operations)
+        for signal in audio_signals:
+            original_length = signal.signal_length
+            signal.resample(self.sample_rate)
+            signal.zero_pad(0, max_samples - original_length)
+            signal.normalize(normalize_db)
+            signal.ensure_max_of_audio()
+            original_lengths.append(original_length)
+
+        batch_audio_data = [
+            signal.audio_data.reshape(1, 1, -1) for signal in audio_signals
+        ]
+
+        # Stack all audio data along batch dimension
+        batch_audio_data = torch.cat(batch_audio_data, dim=0)  # [B, 1, T]
+
+        # 2. Preprocess all signals at once
+        batch_audio_data = self.batch_preprocess(
+            batch_audio_data, self.sample_rate
+        )  # [B, 1, T']
+
+        # 3. Forward pass -> codes for all signals at once
+        # codes shape: [B, n_codebooks, T_code]
+        _, codes, _, _, _ = self.encode(batch_audio_data, n_quantizers=None)
+
+        # 4. Process each item in the batch to get the right number of frames
+        results = []
+        for i in range(batch_size):
+            # Get codes for this item
+            item_codes = codes[i : i + 1]  # Keep batch dim: [1, n_codebooks, T_code]
+
+            # Calculate the ratio between encoded frames and input samples
+            input_length = batch_audio_data.shape[-1]
+            encoded_length = item_codes.shape[-1]
+            codes_ratio = encoded_length / input_length
+            needed_frames = math.ceil(original_lengths[i] * codes_ratio)
+
+            # Ensure we don't exceed the actual number of frames
+            needed_frames = min(needed_frames, encoded_length)
+            item_codes = item_codes[
+                ..., :needed_frames
+            ]  # [1, n_codebooks, needed_frames]
+
+            # Remove batch dimension => [n_codebooks, needed_frames]
+            item_codes = item_codes.squeeze(0)
+
+            # Convert to CPU np.int16 array
+            result = item_codes.cpu().numpy().astype(np.int16)
+            results.append(result)
+
+        return results
 
     @torch.no_grad()
     def decompress(
