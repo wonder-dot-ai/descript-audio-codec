@@ -2,6 +2,7 @@ import math
 import torch
 import tqdm
 import numpy as np
+import torch.nn.functional as F
 
 from torch import nn
 from pathlib import Path
@@ -239,14 +240,27 @@ class CodecMixin:
         audio_signals = [signal.clone().to(self.device) for signal in audio_signals]
         max_samples = int(self.sample_rate * max_duration_s)
 
-        # Resample and pad all signals at once (GPU operations)
         for signal in audio_signals:
-            original_length = signal.signal_length
-            signal.resample(self.sample_rate)
-            signal.zero_pad(0, max_samples - original_length)
-            signal.normalize(normalize_db)
+            # Reshape audio data to [1, 1, T]
+            audio = signal.audio_data.reshape(1, 1, -1)
+            current_length = audio.shape[-1]
+
+            # Pad or truncate to match max_samples
+            if current_length < max_samples:
+                pad_amount = max_samples - current_length
+                audio = F.pad(audio, (0, pad_amount))
+            else:
+                audio = audio[..., :max_samples]
+
+            # Update the signal's audio_data with the padded/truncated version
+            signal.audio_data = audio
+
+            # Apply normalization if needed (assuming it operates in-place)
+            if normalize_db is not None:
+                signal.normalize(normalize_db)
+
             signal.ensure_max_of_audio()
-            original_lengths.append(original_length)
+            original_lengths.append(min(current_length, max_samples))
 
         batch_audio_data = [
             signal.audio_data.reshape(1, 1, -1) for signal in audio_signals
